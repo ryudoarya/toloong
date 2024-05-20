@@ -1,0 +1,187 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Kriteria;
+use Illuminate\Http\Request;
+
+class PerangkinganController extends Controller
+{
+    public function index()
+    {
+        // Mengambil semua data kriteria dari tabel 'kriteria'
+        $kriterias = Kriteria::with('satpam')->get();
+
+        // Step 1: Normalisasi Matriks Keputusan
+        $normalizedMatrix = [];
+        $criteriaWeights = [
+            'tinggi_badan' => 0.30,
+            'berat_badan' => 0.15,
+            'usia' => 0.20,
+            'pengalaman_kerja' => 0.35,
+            'kemampuan_beladiri' => 0.10
+        ];
+
+        // Get squared sum for normalization
+        $squaredSum = [
+            'tinggi_badan' => 0,
+            'berat_badan' => 0,
+            'usia' => 0,
+            'pengalaman_kerja' => 0,
+            'kemampuan_beladiri' => 0
+        ];
+
+        foreach ($kriterias as $kriteria) {
+            $squaredSum['tinggi_badan'] += pow($this->konversiNilaiKeBobot('tinggi_badan', $kriteria->tinggi_badan), 2);
+            $squaredSum['berat_badan'] += pow($this->konversiNilaiKeBobot('berat_badan', $kriteria->berat_badan), 2);
+            $squaredSum['usia'] += pow($this->konversiNilaiKeBobot('usia', $kriteria->usia), 2);
+            $squaredSum['pengalaman_kerja'] += pow($this->konversiNilaiKeBobot('pengalaman_kerja', $kriteria->pengalaman_kerja), 2);
+            $squaredSum['kemampuan_beladiri'] += pow($this->konversiNilaiKeBobot('kemampuan_beladiri', $kriteria->kemampuan_beladiri), 2);
+        }
+
+        foreach ($kriterias as $kriteria) {
+            $normalizedMatrix[] = [
+                'id' => $kriteria->id,
+                'satpam' => $kriteria->satpam ? $kriteria->satpam->name : 'Unknown',
+                'tinggi_badan' => $squaredSum['tinggi_badan'] != 0 ? $this->konversiNilaiKeBobot('tinggi_badan', $kriteria->tinggi_badan) / sqrt($squaredSum['tinggi_badan']) : 0,
+                'berat_badan' => $squaredSum['berat_badan'] != 0 ? $this->konversiNilaiKeBobot('berat_badan', $kriteria->berat_badan) / sqrt($squaredSum['berat_badan']) : 0,
+                'usia' => $squaredSum['usia'] != 0 ? $this->konversiNilaiKeBobot('usia', $kriteria->usia) / sqrt($squaredSum['usia']) : 0,
+                'pengalaman_kerja' => $squaredSum['pengalaman_kerja'] != 0 ? $this->konversiNilaiKeBobot('pengalaman_kerja', $kriteria->pengalaman_kerja) / sqrt($squaredSum['pengalaman_kerja']) : 0,
+                'kemampuan_beladiri' => $squaredSum['kemampuan_beladiri'] != 0 ? $this->konversiNilaiKeBobot('kemampuan_beladiri', $kriteria->kemampuan_beladiri) / sqrt($squaredSum['kemampuan_beladiri']) : 0
+            ];
+        }
+
+        // Step 2: Pembobotan Matriks Keputusan
+        foreach ($normalizedMatrix as &$row) {
+            // Menyimpan nilai sementara untuk menghindari pembagian dengan nol
+            $tinggi_badan_weight = ($criteriaWeights['tinggi_badan'] == 5) ? $criteriaWeights['tinggi_badan'] : 1 / $criteriaWeights['tinggi_badan'];
+            $berat_badan_weight = ($criteriaWeights['berat_badan'] == 5) ? $criteriaWeights['berat_badan'] : 1 / $criteriaWeights['berat_badan'];
+            $usia_weight = ($criteriaWeights['usia'] == 5) ? $criteriaWeights['usia'] : 1 / $criteriaWeights['usia'];
+            $pengalaman_kerja_weight = ($criteriaWeights['pengalaman_kerja'] == 5) ? $criteriaWeights['pengalaman_kerja'] : 1 / $criteriaWeights['pengalaman_kerja'];
+            $kemampuan_beladiri_weight = ($criteriaWeights['kemampuan_beladiri'] == 5) ? $criteriaWeights['kemampuan_beladiri'] : 1 / $criteriaWeights['kemampuan_beladiri'];
+
+            // Memastikan pembagian dilakukan jika total bobot bukan nol
+            $total_weight = $tinggi_badan_weight + $berat_badan_weight + $usia_weight + $pengalaman_kerja_weight + $kemampuan_beladiri_weight;
+            if (abs($total_weight) > 1e-10) { // Memeriksa bahwa total bobot tidak terlalu dekat dengan nol
+                $row['tinggi_badan'] *= $tinggi_badan_weight;
+                $row['berat_badan'] *= $berat_badan_weight;
+                $row['usia'] *= $usia_weight;
+                $row['pengalaman_kerja'] *= $pengalaman_kerja_weight;
+                $row['kemampuan_beladiri'] *= $kemampuan_beladiri_weight;
+            } else {
+                // Jika total bobot nol, maka set nilai pembobotan ke 0
+                $row['tinggi_badan'] = 0;
+                $row['berat_badan'] = 0;
+                $row['usia'] = 0;
+                $row['pengalaman_kerja'] = 0;
+                $row['kemampuan_beladiri'] = 0;
+            }
+        }
+
+
+        // Step 3: Menentukan Solusi Ideal Positif dan Negatif
+        $idealPositive = [];
+        $idealNegative = [];
+
+        foreach ($criteriaWeights as $criteria => $weight) {
+            if (
+                $criteria === 'berat_badan' || $criteria === 'usia'
+            ) {
+                // Jika kriteria adalah benefit, ambil nilai maksimum
+                $idealPositive[$criteria] = max(array_column(
+                    $normalizedMatrix,
+                    $criteria
+                ));
+                // Jika kriteria adalah cost, ambil nilai minimum
+                $idealNegative[$criteria] = min(array_column(
+                    $normalizedMatrix,
+                    $criteria
+                ));
+            } else {
+                // Jika kriteria adalah benefit, ambil nilai minimum
+                $idealPositive[$criteria] = min(array_column(
+                    $normalizedMatrix,
+                    $criteria
+                ));
+                // Jika kriteria adalah cost, ambil nilai maksimum
+                $idealNegative[$criteria] = max(array_column(
+                    $normalizedMatrix,
+                    $criteria
+                ));
+            }
+        }
+
+        // Step 4: Menghitung Jarak dari Solusi Ideal Positif dan Negatif
+        foreach ($normalizedMatrix as &$row) {
+            $row['D+'] = sqrt(
+                pow($idealPositive['tinggi_badan'] - $row['tinggi_badan'], 2) +
+                    pow($idealPositive['berat_badan'] - $row['berat_badan'], 2) +
+                    pow($idealPositive['usia'] - $row['usia'], 2) +
+                    pow($idealPositive['pengalaman_kerja'] - $row['pengalaman_kerja'], 2) +
+                    pow($idealPositive['kemampuan_beladiri'] - $row['kemampuan_beladiri'], 2)
+            );
+
+            $row['D-'] = sqrt(
+                pow($row['tinggi_badan'] - $idealNegative['tinggi_badan'], 2) +
+                    pow($row['berat_badan'] - $idealNegative['berat_badan'], 2) +
+                    pow($row['usia'] - $idealNegative['usia'], 2) +
+                    pow($row['pengalaman_kerja'] - $idealNegative['pengalaman_kerja'], 2) +
+                    pow($row['kemampuan_beladiri'] - $idealNegative['kemampuan_beladiri'], 2)
+            );
+        }
+
+        // Step 5: Menghitung Nilai Preferensi untuk Setiap Alternatif
+        foreach ($normalizedMatrix as &$row) {
+            $row['V'] = ($row['D+'] + $row['D-']) != 0 ? $row['D-'] / ($row['D+'] + $row['D-']) : 0;
+        }
+
+        // Mengurutkan alternatif berdasarkan nilai preferensi
+        usort($normalizedMatrix, function ($a, $b) {
+            return $b['V'] <=> $a['V'];
+        });
+
+        // Mengirim data kriteria yang telah diurutkan ke view
+        return view('dashboard')->with('kriterias', $normalizedMatrix);
+    }
+
+    private function konversiNilaiKeBobot($jenisKriteria, $nilai)
+    {
+        // Melakukan konversi nilai kriteria menjadi bobot sesuai dengan tabel bobot yang telah ditentukan sebelumnya
+        switch ($jenisKriteria) {
+            case 'tinggi_badan':
+                if ($nilai >= 165 && $nilai <= 168) return 1;
+                if ($nilai > 168 && $nilai <= 171) return 2;
+                if ($nilai > 171 && $nilai <= 174) return 3;
+                if ($nilai > 174 && $nilai <= 177) return 4;
+                if ($nilai > 177) return 5;
+                return 0;
+            case 'berat_badan':
+                if ($nilai <= 65) return 1;
+                if ($nilai > 65 && $nilai <= 70) return 2;
+                if ($nilai > 70 && $nilai <= 75) return 3;
+                if ($nilai > 75 && $nilai <= 80) return 4;
+                if ($nilai > 80) return 5;
+                return 0;
+            case 'usia':
+                if ($nilai <= 24) return 1;
+                if ($nilai > 24 && $nilai <= 27) return 2;
+                if ($nilai > 27 && $nilai <= 30) return 3;
+                if ($nilai > 30 && $nilai <= 33) return 4;
+                if ($nilai > 33) return 5;
+                return 0;
+            case 'pengalaman_kerja':
+                if ($nilai == 1) return 1;
+                if ($nilai == 2) return 2;
+                if ($nilai == 3) return 3;
+                if ($nilai == 4) return 4;
+                if ($nilai == 5) return 5;
+                return 0;
+            case 'kemampuan_beladiri':
+                if ($nilai <= 1) return 1;
+                if ($nilai > 1 && $nilai <= 5) return 5;
+                return 0;
+            default:
+                return 0; // Menangani kasus jika jenis kriteria tidak dikenali
+        }
+    }
+}
